@@ -1,0 +1,316 @@
+2026_08_10
+Prepared the AudioCommander Linux handoff without changing the accepted
+Windows v9.2 project. Created a checksum-manifested read-only snapshot of C
+sources, tests, CMake configuration, skins, documentation and licence/notices.
+Excluded executables, DLLs, build trees, portable packages, third-party binary
+bundles and user settings. Added Linux Mint porting scope, file-operation safety
+gates, proposed C11/GTK 3 modules, staged playback/file-operation/AppImage
+goals, and a ready-to-paste Linux AI prompt. No Linux source, build, dependency
+installation, GUI, audio, file mutation or AppImage exists yet.
+
+2026_08_11
+Environment audit (Goal 1 baseline):
+  host x86_64, Linux Mint 22.3 "zena", X11, Cinnamon 6.6.9
+  gcc 13.3.0, cmake 3.28.3, pkg-config available
+  GTK 3.24.41 development headers PRESENT (no install needed for Goal 1)
+  FFmpeg dev libs NOT installed, libopenmpt NOT installed (later goals only)
+Snapshot verification:
+  reference_windows_v92/SOURCE_SHA256.txt -> 68/68 files OK after normalizing
+  backslash paths (sed 's|\\\\|/|g'). Shipped verify_reference.sh fails on
+  backslash entries; the normalized manifest is /tmp/opencode/SHA_normalized.txt.
+Portability assessment (from reading reference sources):
+  Portable as-is: browser logic (is_audio_name, sort, summary), playlist,
+  localization (4 languages), skin parser.
+  Win32-only: browser_list_folder + normalize_folder (FindFirstFileW/GetFullPathNameW),
+  settings (INI via GetPrivateProfileStringW, exe-relative paths), app.c message loop,
+  file_ops/copy_progress, playback_mf.
+  Replaceable later: playback_ffmpeg, playback_openmpt (libs not installed).
+  Reference uses wchar_t throughout (UTF-16); on Linux wchar_t is UTF-32. Core keeps
+  wchar_t internally; UTF-8 <-> wchar conversion at file/GTK boundaries.
+  Path separator decision: Linux core uses '/' internally; the few reference
+  helpers that hard-code '\\' are made separator-aware. Tests use real Linux paths.
+  INI stays the persistence format (UTF-8 on disk) at XDG location
+  ~/.config/audiocommander/audiocommander.ini (env AUDIOCOMMANDER_INI_PATH overrides
+  for tests). Skins load from env AUDIOCOMMANDER_SKINS_DIR -> $XDG_DATA_HOME/
+  audiocommander/skins -> <exedir>/skins. External skins are copied to the data dir.
+  settings_create_font stays as a stub (returns non-NULL sentinel) until the GTK UI;
+  HFONT is a void* on Linux.
+Goal 1 implementation plan (numbered):
+  1. src/platform.h Win32-compat shims (COLORREF/RGB, ARRAYSIZE, BOOL, LF_FACESIZE,
+     HFONT, swprintf_s/swscanf_s/wcscpy_s, GetPrivateProfileStringW/IntW,
+     WritePrivateProfileStringW) over a self-contained UTF-8 INI module (src/ini.c/h).
+  2. src/browser.c/h port: is_audio_name/sort/summary verbatim; list_folder via
+     opendir/readdir/stat; normalize_folder via realpath(); parent/join separator-aware.
+  3. src/playlist.c/h, src/localization.c/h, src/skin.c/h transcribed from reference
+     (pure wchar logic, compiles against platform.h).
+  4. src/settings.c/h port: same struct + INI keys + Version 4/5 theme migration;
+     ini_path via XDG + env override; first-run acceptance; directories persistence;
+     theme colors for 2 built-ins + 8 external .skn files.
+  5. src/media_info.c/h stub (duration 0) for Goal 1; interface-only headers
+     src/file_ops.h, src/copy_progress.h, src/playback.h (no implementation).
+  6. src/app.c/h GTK3 dual-pane read-only browser skeleton (browse + summaries only);
+     compiled, NOT launched in Goal 1.
+  7. tests: test_browser, test_playlist, test_localization, test_settings mirroring
+     the four reference smoke tests with Linux path conventions + mkdtemp fixtures.
+  8. CMakeLists.txt (C11, GTK3, ctest); build; run tests; checkpoint note.
+No apt installs performed. No GUI launched. No file mutation APIs implemented.
+
+
+=== CHECKPOINT 2: core layer complete, tests green (2026-08-11) ===
+State: 4/4 tests pass, clean Debug build (zero warnings), app links.
+  build/audiocommander links; test_browser/playlist/localization/settings all Passed.
+This checkpoint fixed three bugs in the core/ini layer:
+  1. ini_set_string: when key was MISSING from an existing section, it appended a
+     new [section] header instead of inserting the key into the existing section.
+     Fixed: detect existing section header, insert after it (or create if absent).
+  2. ini_get_int: declared `bool` in ini.h/ini.c but returned `int`; every stored
+     int truncated to 0/1, so settings_load couldn't read stored theme/version
+     (caused test_settings exit 26). Fixed: return type `int`.
+  3. test_browser.c: missing #include <unistd.h> for rmdir (implicit decl warning).
+Remaining known gap: GUI layer (~96 errors) is still not compiled/working; GUI
+not yet launched. Next step: fix GUI build or fall back to TUI/ncurses.
+
+=== CHECKPOINT 3: GUI skeleton verified, decision made (2026-08-11) ===
+Decision: GTK3 (already a dependency) over ncurses TUI.
+  - GTK3 on every desktop distro; AppImage path = linuxdeploy + GTK plugin.
+  - Maps to reference skins/themes (Office2003 etc.); TUI would abandon them.
+Verified this session:
+  1. build/audiocommander launches and runs under Xvfb: window maps at
+     960x540 (xwininfo tree shows "AudioCommander" mapped), gtk_main alive,
+     zero stderr output, clean exit on timeout (code 124 = alive).
+  2. Screenshot verification NOT possible here: xwd captures render 100%
+     black for ALL GTK3 apps under bare Xvfb. Proven with a trivial 10-line
+     GTK3 test program (same black result). This is a headless/no-compositor
+     capture artifact, NOT an app bug. Do not chase this.
+  3. No xdotool/ImageMagick available; skip scripted interaction tests.
+Current GUI: dual-pane read-only browser (Up/Refresh/Browse buttons, path
+entry, tree view w/ Name/Size/Duration, summary label). Already linked.
+Remaining work (tomorrow): add file ops (copy/move/delete/rename) to panes;
+apply skins + localization to UI; optional playback; then AppImage package.
+
+=== CHECKPOINT 4: file ops layer implemented (2026-08-11) ===
+Implemented the file-operations core for Linux, mirroring the reference
+Windows file_ops.c/copy_progress.c semantics:
+  - file_ops.c: exists (stat); copy/copy_with_progress (64KB buffered loop,
+    progress callback fires per chunk; overwrite policy enforced);
+    move = rename() first, EXDEV fallback = copy+delete;
+    copy_directory/move_directory = recursive copy; move merges into an
+    existing destination dir, else rename, else cross-device copy+delete;
+    recycle = freedesktop.org Trash spec ($XDG_DATA_HOME/Trash or
+    ~/.local/share/Trash, files/ + info/ .trashinfo with DeletionDate);
+    delete_permanently = recursive delete;
+    delete_disposition = PERMANENT when path is under /media/, /run/media/,
+    or /mnt/ (removable heuristic), else RECYCLE;
+    delete_disposition_for_drive_type(REMOVABLE)=PERMANENT else RECYCLE;
+    delete_flags: RECYCLE->ALLOW_RECOVER, PERMANENT->CONFIRM.
+  - file_ops.h: added FILE_OPS_DRIVE_TYPE_* (matches Windows DRIVE_ values)
+    and FILE_OPS_DELETE_FLAG_* constants.
+  - copy_progress.c: copy_progress_should_show mirrors reference (600ms rule);
+    copy_progress_copy does a synchronous GTK-free copy (progress dialog is a
+    future app.c GUI-layer enhancement; core stays GTK-free).
+  - tests/test_file_ops.c mirrors reference file_ops_smoke.c: delete policy,
+    collision/overwrite rules, progress callback totals, nested dir copy+move,
+    trash round-trip, permanent delete. Passes.
+Build: clean (zero warnings), 5/5 ctest green, audiocommander still launches
+under Xvfb.
+Next: wire file ops into the GTK UI (copy/move/delete buttons + confirm
+dialogs + refresh), then skins/localization, then AppImage.
+
+=== CHECKPOINT 5: file ops wired into GTK UI (2026-08-12) ===
+app.c now: per-pane toolbar (Up/Refresh/Browse/Copy/Move/Delete/Swap),
+localized labels via settings.language (UI_* strings from localization.c),
+tree store carries a KIND column so dir vs file ops are chosen correctly,
+selection-changed disables Copy/Move/Delete when nothing is selected.
+Transfer flow mirrors reference app.c: collect selection -> join dest path ->
+same-item check -> overwrite/merge confirm dialogs -> dir: copy/move_directory,
+file: move or copy_progress_copy -> refresh both panes on change.
+Delete flow: disposition via file_ops_delete_disposition(folder) -> localized
+confirm (permanent vs recycle wording) -> per-item recycle/delete_permanently.
+Swap swaps the two pane folders.
+New gui_smoke test: AUDIOCOMMANDER_GUI_SMOKE=1 env hook in app.c drives the real
+selection->transfer_between code paths headlessly (move left->right, then copy
+right->left), prints GUI_SMOKE_PASS, quits via g_idle. Wired into ctest via
+xvfb-run (test #6, ~0.6s). This proves the UI buttons' code paths work
+end-to-end, since xwd screenshots render black under bare Xvfb (env artifact).
+State: 6/6 ctest green, zero warnings, app launches.
+Remaining: skins/localization in GUI, playback, AppImage package.
+
+=== CHECKPOINT 6: theme + language in GUI, settings dialog (2026-08-12) ===
+app.c now has a Settings dialog (Settings button in each pane toolbar):
+  - AppContext struct (window, left/right panes, AppSettings*) created in
+    app_main; pane->context back-pointer set for handlers.
+  - on_settings_clicked opens a modal dialog with Theme + Language combos.
+    Theme list = settings_theme_available (built-ins + external .skn via
+    skin_load_file), Language = settings_language_name (4 locales).
+  - on_settings_response writes theme/language, settings_save, then re-applies.
+  - apply_language relabels window title, all buttons, column headers, and
+    refreshes summaries from settings.language (app_pane_refresh re-runs).
+  - apply_theme injects GTK CSS from settings_theme_colors: window bg, text,
+    entry/treeview bg, selection highlight, summary bar (#ac_summary). Kept
+    the provider per-screen at PRIORITY_APPLICATION so it re-themes live.
+  - Directory persistence: on_window_destroy saves left/right folders when
+    remember_directories; app_main restores them at startup.
+  - AppPane stores widget refs (up/refresh/browse/swap/settings buttons, the
+    three columns) for live relabeling; copy/move labels are side-aware.
+  - gui_smoke hardened: deletes stale move-me.mp3 in both dirs up front so a
+    leftover file can't open a blocking overwrite dialog on rerun.
+Build: clean, 6/6 ctest green (incl. gui_smoke), app launches under Xvfb.
+Remaining: playback (FFmpeg/libopenmpt not installed; mpv/paplay/aplay/cvlc
+present on host), AppImage package.
+
+=== CHECKPOINT 7: playback + AppImage + smoke-test fix (2026-08-12) ===
+Playback (native, FFmpeg + PulseAudio; deps installed per goal audit):
+  - media_info.c: real durations via avformat (stream time_base -> ms, with
+    container-duration fallback) + 256-entry path->duration cache so listing
+    refreshes don't re-open every file. media_read_info fills sample rate,
+    channels, bit depth, codec, container, channel layout, title/artist/album.
+  - playback.c: opens the file (avformat/avcodec), converts to S16
+    (libswresample), streams to a PulseAudio simple sink in a pthread; pause,
+    seek (av_seek_frame + flush + position rewind), volume (sample gain,
+    default 75%) all behind a mutex/cond. Decode thread owns Pulse; EOF drains
+    and self-cleans; stop joins.
+  - app.c: Stop button per pane (disabled until playing, refreshed by a 500ms
+    poll), double-click on an audio row starts playback, on a folder navigates;
+    play failures show UI_PLAY_FAILED. Playback volume starts from settings.
+  - CMake: ac_core links libavformat/libavcodec/libavutil/libswresample +
+    libpulse + libpulse-simple + pthread (pulse-simple needed for pa_simple_*).
+  - new test_media_info (#6): generated 1s 44.1k mono WAV -> duration ~1000ms,
+    sample rate/channels/bit depth, container name, cache stability, missing
+    file -> 0. Verified live: position advances in real time, seek 2500ms lands
+    ~2778ms, stop clean, all under a real Pulse server.
+  - BUG FIX (important): gui_smoke always exited 0, so every earlier smoke
+    "pass" was a false positive. gui_smoke_fail now exits 1 via an idle callback
+    (verified: a real failure now fails ctest). Smoke also recreates its
+    move-me.mp3 fixture after stale cleanup, so it is hermetic and re-runnable.
+Packaging (packaging/):
+  - build_appimage.sh (run with bash): downloads linuxdeploy + gtk plugin +
+    appimage plugin, builds Release, stages AppDir, bundles GTK3, FFmpeg client
+    libs and Pulse client libs from ldd, copies the 8 .skn skins to
+    usr/bin/skins (exe-relative lookup). Output
+    build-appimage/AudioCommander-<YYYYMMDD>-x86_64.AppImage (~67 MB).
+  - packaging/README.md: exact apt-get lines for dev deps, AppImage build/run
+    commands, FUSE fallback, and a runtime-troubleshooting table.
+  - audiocommander.desktop + generated 256x256 PNG icon.
+  - VERIFIED: AppImage contents inspected (skins + libavformat/avcodec/pulse
+    libs + libgtk-3 all inside); gui_smoke runs PASS inside the AppImage.
+State: 7/7 ctest green, zero warnings, AppImage builds and passes smoke.
+Remaining: AppImageHub submission (optional), libopenmpt tracker support
+(optional, module files only), volume slider/progress UI, playlist queue.
+
+=== CHECKPOINT 8: UI contrast + scaling fixes (2026-08-12) ===
+User feedback: button text too dark/close to background (invisible); the two
+list panes did not scale to the window (columns stayed at content width).
+  - apply_theme CSS now paints controls explicitly so the app does not inherit
+    the host GTK theme's button colors (e.g. a dark desktop theme): buttons get
+    background = ThemeColors.button_top, color = text, border-color = border,
+    hover = hot_border; entry/treeview keep control bg; selection and summary
+    unchanged. Window default size raised 960x540 -> 1280x720.
+  - Name and Size tree columns now gtk_tree_view_column_set_expand(TRUE), so
+    the lists fill the pane and stretch with window resizing/maximise.
+  - remember_window is now honoured: on startup the stored Width/Height/X/Y are
+    applied (gtk_window_resize/move); on_window_destroy saves the live
+    geometry back to the INI.
+Verified: clean build, 7/7 ctest, zero stderr on launch (CSS parses), AppImage
+rebuilt and passes the in-AppImage smoke test.
+
+2026_08_12  Pane sizing fix + Home button + theme rework
+  - Pane half-width bug root cause: GtkButtonBox forces each toolbar button to
+    child-min-width 85px -> toolbar min 981px -> window forced to 1966px wide.
+    Fix: toolbar is now a plain GtkBox (min 562px), panes live in a plain HBox
+    with two expand=TRUE children (no GtkPaned divider), columns are FIXED
+    (Name 300 expand+ellipsize, Size/Duration 90). Verified: panes 638/638 at
+    window 1280 (was 981/981 at 1966); gui_smoke asserts equal widths at
+    startup + conditional rescale check when a WM honours gtk_window_resize.
+  - Copy/Move stop-sign dialog root cause: transfer_between fed UI_MOVE_ACTION
+    ("Move"/"Copy", the verb) straight into error_dialog, so any failure showed
+    only the word. Now formats UI_FAILED_FORMAT ("%ls failed.\n\n%ls") with the
+    verb + file_ops_last_error() (strerror of errno). Also both panes now start
+    at $HOME instead of "/" (root was un-writable, guaranteeing permission
+    errors on copy/move). Remembered directories still override.
+  - New Home button as the last toolbar button on each pane (UI_HOME string,
+    was UI_DARK_MODE), navigates to $HOME.
+  - Theme rework: added built-in APP_THEME_DARK and APP_THEME_BLUE (skins for
+    ACRYL..ZEST still external). Dark mode checkbox removed; legacy
+    [Appearance] DarkMode=1 migrates to the Dark theme on load. apply_theme
+    dark_mode override block removed; CSS now covers combobox/spinbutton/
+    checkbutton/scrollbar/dialog (".background") so every theme is consistent
+    app-wide. CSS provider now stored in AppContext.theme_provider and removed
+    before re-adding (no stacking leak).
+  - gui_smoke additions: per-theme PNG captures to /tmp/opencode/smoke-*.png
+    (main window + settings dialog), Home-button navigation check, and theme
+    availability. Pixel-luminance analysis (PIL) confirmed contrast: pastel/
+    native light bg + dark text; dark/blue dark bg + light text.
+Verified: clean build, 7/7 ctest in build/ and build-appimage/, AppImage
+rebuilt (12:19) passing the in-AppImage smoke test.
+
+2026_08_13  Chooser-dialog theme fix (dark-on-dark) + smoke capture rework
+  - Root cause of the dark-on-dark chooser report: the settings dialog never
+    followed the app theme at all (light bg in every theme; only the main
+    window was themed). Fixed in app.c apply_theme CSS: added
+    "dialog, dialog.background, dialog .background { background-color: %s }"
+    with the theme window colour, so ALL GtkDialogs theme consistently
+    (settings, font/colour choosers, merge-confirm).
+  - Verified via smoke PNGs: settings dialog now matches the theme (blue theme
+    caught at bg RGB(28,58,112); dark at RGB(38,38,44)); dark font chooser
+    bg RGB(38,38,44) with light text/buttons (contrast OK); merge-confirm
+    themed. GUI smoke PASS, 7/7 ctest.
+  - Smoke harness: settings-dialog X captures are frame-raced (backing lag,
+    intermittent stale/black frames). Offscreen gtk_widget_draw renders only
+    fallback fill for dialogs (unlike main window), so reverted to X capture.
+    Kept smoke_dump_widget_tree (settings, dark theme) as the reliable layout
+    check. Settle pump 80 after present/raise.
+  - Built AppImage: build-appimage/AudioCommander-20260813-x86_64.AppImage.
+Resume points (Monday):
+  1. Deliverable is staged: AppImage + binary built; user can run to confirm
+     chooser dialogs look right.
+  2. If any dialog still looks off, the tree dump + per-theme PNGs to re-check
+     are: /tmp/opencode/smoke-settings-*.png, smoke-font-chooser-*.png,
+     smoke-merge-confirm.png.
+  3. Optional follow-up: make settings-dialog smoke capture deterministic
+     (currently races X backing; would need a draw-driven capture that
+     resolves dialog styles, or gdk_window_process_updates settle loop).
+
+2026_08_13  Keyboard accelerators + column-click sorting + help window
+  - F1-F5 keyboard accelerators wired via key-press-event handler on the main
+    window. F1 opens a help dialog (scrollable text from localization_help_text),
+    F2 copies active pane to opposite, F3 moves, F4 deletes, F5 refreshes both
+    panes. Active pane determined by which pane's tree_view has focus.
+  - Column-click sorting for Name/Size/Duration headers. Click toggles
+    ascending/descending; clicking a different column resets to ascending.
+    Uses browser_listing_sort (insertion sort, already in browser.c).
+    GTK sort indicators (arrows) show active column and direction via
+    gtk_tree_view_column_set_sort_indicator. AppPane struct gains sort_column
+    and sort_descending fields.
+  - Help window: GtkDialog with GtkScrolledWindow + GtkTextView showing
+    localization_help_text for the active language (EN/ZH/IT/PL). Modal,
+    600x450 default, Close button via GTK_RESPONSE_CLOSE.
+  - gui_smoke: F5 key handler test added (synthetic GdkEventKey, verifies
+    handler returns TRUE).
+Verified: clean build, 7/7 ctest, zero new warnings.
+
+2026_08_17  Feature batch: sorting, settings checkboxes, refresh-all, AppImage
+  - Column-click sorting fully working: clicking Name/Size/Duration toggles
+    ascending/descending; clicking a different column resets to ascending.
+    browser_listing_sort (insertion sort, already in browser.c) now called
+    from app_pane_rebuild. GTK sort indicators via
+    gtk_tree_view_column_set_sort_indicator. AppPane gains sort_column and
+    sort_descending fields, default BROWSER_SORT_NAME ascending.
+  - Settings dialog: added Remember Window Position, Remember Directories,
+    and Monospace checkboxes (rows 5-7 in the grid). Reading/writing via
+    g_object_set_data on dialog, stored in settings on OK. Uses existing
+    UI_REMEMBER_WINDOW, UI_REMEMBER_DIRECTORIES, UI_MONOSPACE localized
+    strings.
+  - Refresh All button between panes (below Swap): calls app_pane_refresh
+    on both left and right. Relabeled with UI_REFRESH in apply_language.
+  - F5 keyboard accelerator also refreshes both panes (active + sibling).
+  - AppImage rebuilt: build-appimage/AudioCommander-20260817-x86_64.AppImage.
+Verified: clean build, 7/7 ctest, zero new warnings.
+
+Still outstanding (lower priority):
+  - Per-file info panel (metadata detail view; current info button shows
+    directory summary only).
+  - In-place file renaming (F2 / label edit; GtkTreeView equivalent needed).
+  - libopenmpt tracker module support (MOD/S3M/XM playback via libopenmpt;
+    deps not installed).
+  - Single-instance enforcement (named lock file or DBus).
+  - First-run acceptance dialog.

@@ -1,0 +1,27 @@
+# Build dirs (rebuilt, 500MB+)
+build/
+build-appimage/
+build-appimage-debug/
+build-dbg/
+build-debug/
+
+# Packaging tooling
+.tools-appimage/
+
+# Portables / binaries
+*.AppImage
+*.AppImage.zsync
+*.deb
+*.bin
+*.exe
+*.run
+
+# Reference material (Windows source, large)
+reference_windows_*/
+
+# Local state
+data/
+Testing/
+CMakeCache.txt
+cscope.*
+tags

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=AudioCommander
+Comment=Audio file browser and player
+Exec=audiocommander
+Icon=audiocommander
+Terminal=false
+Categories=AudioVideo;Audio;Player;
