@@ -1,5 +1,8 @@
 # AppImage packaging
 
+> ## USE IT AT YOUR OWN RISK !
+> Experimental unofficial port. No warranty; backup your data before use.
+
 ## What the AppImage contains
 
 Bundled *inside* the AppImage:

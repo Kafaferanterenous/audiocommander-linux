@@ -1,5 +1,11 @@
 # AudioCommander for Linux Mint
 
+> ## USE IT AT YOUR OWN RISK !
+> This is an experimental, unofficial, community-oriented Linux port. It is
+> provided as-is with **no warranty of any kind**. Backup your data before
+> using it; the author accepts no liability for data loss, damage, or any
+> other consequence of use.
+
 This directory is a prepared handoff for a native Linux port of the accepted
 AudioCommander v9.2 Windows release.
 
